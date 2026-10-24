@@ -1,5 +1,5 @@
 import streamlit as st
-import PyPDF2
+import pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import re
@@ -21,9 +21,11 @@ def extract_text_from_pdfs(files):
     all_text = ""
     for file in files:
         try:
-            reader = PyPDF2.PdfReader(file)
+            reader = PdfReader(file)
             for page in reader.pages:
-                all_text += page.extract_text() + "\n"
+                txt = page.extract_text()
+                if txt:
+                    all_text += txt + "\n"
         except: pass
     return all_text
 

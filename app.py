@@ -1,93 +1,155 @@
 import streamlit as st
-from pypdf import PdfReader
+import requests
+from bs4 import BeautifulSoup
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
-# مكتبة مجانية بلا مفتاح
 from g4f.client import Client
+import urllib.parse
+import time
+
 client = Client()
+st.set_page_config(page_title="بوت الباك المباشر - مربوط بالمواقع", page_icon="🎓")
 
-st.set_page_config(page_title="DZ DK AI - مجاني بلا مفتاح", page_icon="🤖")
-st.sidebar.title("⚙️ التحكم")
-mode = st.sidebar.radio("الوضع:", ["🌍 عام - مجاني بلا مفتاح", "📚 دراسة - من كتبي"])
+# --- المواقع الموثوقة فقط ---
+TRUSTED_SITES = [
+    "dzexams.com",
+    "bac-feljib.com",
+    "etuddz.com",
+    "dzbac.com",
+    "ency-education.com"
+]
 
-def ask_free_no_key(prompt, context=""):
-    try:
-        system = "انت DK AI مساعد جزائري من الوادي، تجاوب بالدارجة الجزائرية باختصار ومفيد. لا تكرر نفس الرد."
-        if context:
-            user_msg = f"اعتمد فقط على هذا النص من الكتب:\n{context[:3000]}\n\nالسؤال: {prompt}\nاذا الجواب مش موجود قل: غير موجود في الكتب."
-        else:
-            user_msg = prompt
+STREAMS = {
+    "🧪 علوم تجريبية": "علوم تجريبية",
+    "📐 رياضيات": "رياضيات",
+    "💼 تسيير واقتصاد": "تسيير واقتصاد",
+    "📜 آداب وفلسفة": "آداب وفلسفة",
+    "🌍 لغات أجنبية": "لغات أجنبية"
+}
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_msg}
-            ],
-            timeout=25
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        # رد محلي ذكي اذا الانترنت ثقيل
-        p = prompt.lower()
-        if "اهلا" in p or "سلام" in p or "مرحبا" in p:
-            return "أهلا بيك خويا! 👋 أنا DK AI تاعك من الوادي، واجد نجاوبك. تحب أفكار فيديو، دراسة، ولا حاجة أخرى؟"
-        if "موضوع" in p and "فيديو" in p:
-            import random
-            ideas = [
-                "🎥 فكرة: كيفاش درت بوت ذكاء اصطناعي مجاني بلا مفتاح وربطتو مع ستريمليت؟ الناس تموت على هاذ المحتوى!",
-                "🎥 فكرة: 3 مواقع تربح منهم بالدولار وانت في الجزائر (بدون خبرة)",
-                "🎥 فكرة: قصة غريبة: كيفاش Llama 3 تفوق على ChatGPT وهو مجاني؟",
-                "🎥 فكرة: كيفاش تخدم مصغرات يوتيوب بالذكاء الاصطناعي باطل؟"
-            ]
-            return random.choice(ideas)
-        return f"فهمتك: '{prompt}' - السيرفر المجاني مشغول ثانية برك، عاود جرب، راح نجاوبك!"
+if "messages" not in st.session_state:
+    st.session_state.messages = {k: [] for k in STREAMS.keys()}
 
-if "chunks" not in st.session_state: st.session_state.chunks = []
-if "messages" not in st.session_state: st.session_state.messages = []
+with st.sidebar:
+    st.title("🎓 بوت الباك المباشر")
+    selected_stream = st.radio("اختر شعبتك:", list(STREAMS.keys()))
+    st.divider()
+    st.markdown("### 🌐 مربوط مباشرة بـ:")
+    for s in TRUSTED_SITES:
+        st.write(f"✅ {s}")
+    st.caption("البوت يبحث في هذه المواقع فقط لايف، بلا ما ترفع كتب!")
 
-if mode.startswith("📚"):
-    files = st.sidebar.file_uploader("📤 ارفع كتبك PDF", type="pdf", accept_multiple_files=True)
-    if files:
-        text=""
-        for f in files:
-            reader=PdfReader(f)
-            for pg in reader.pages:
-                t=pg.extract_text()
-                if t: text+=t+"\n"
-        st.session_state.chunks=[text[i:i+800] for i in range(0,len(text),800)]
-        st.sidebar.success(f"✅ حفظنا {len(st.session_state.chunks)} مقطع")
-
-st.title("DZ DK AI 🤖 - مجاني بلا مفتاح")
-for m in st.session_state.messages:
-    if m.get("mode")==mode:
-        with st.chat_message(m["role"]): st.markdown(m["content"])
-
-q=st.chat_input("اسألني أي شيء...")
-if q:
-    st.session_state.messages.append({"role":"user","content":q,"mode":mode})
-    with st.chat_message("user"): st.markdown(q)
+def search_in_trusted_sites(query, stream):
+    """يبحث في المواقع الموثوقة فقط"""
+    all_texts = []
+    headers = {"User-Agent": "Mozilla/5.0"}
     
-    ctx=""
-    if mode.startswith("📚"):
-        if not st.session_state.chunks:
-            ans="⬅️ ارفع كتابك أولا من الجنب"
-            with st.chat_message("assistant"): st.markdown(ans)
-            st.session_state.messages.append({"role":"assistant","content":ans,"mode":mode})
-            st.stop()
-        else:
-            vec=TfidfVectorizer().fit(st.session_state.chunks+[q])
-            sims=cosine_similarity(vec.transform([q]), vec.transform(st.session_state.chunks)).flatten()
-            top=sims.argsort()[-3:][::-1]
-            ctx="\n".join([st.session_state.chunks[i] for i in top])
-            if sims[top[0]]<0.08:
-                ans="❌ هذا السؤال غير موجود في الكتب اللي رفعتها."
-                with st.chat_message("assistant"): st.markdown(ans)
-                st.session_state.messages.append({"role":"assistant","content":ans,"mode":mode})
-                st.stop()
+    # نكون رابط بحث DuckDuckGo مقيد بالمواقع
+    search_query = f"site:dzexams.com OR site:bac-feljib.com {stream} {query}"
+    encoded = urllib.parse.quote_plus(search_query)
+    
+    try:
+        # نجيب نتائج البحث
+        search_url = f"https://html.duckduckgo.com/html/?q={encoded}"
+        r = requests.get(search_url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        links = []
+        for a in soup.find_all('a', class_='result__url', limit=5):
+            href = a.get('href')
+            if href and any(site in href for site in TRUSTED_SITES):
+                # DuckDuckGo يخبي الرابط الحقيقي
+                parsed = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                real_url = parsed.get('uddg', [None])[0]
+                if real_url:
+                    links.append(real_url)
+        
+        # لو ما لقيناش، نجربو مباشرة dzexams
+        if not links:
+            # بحث مباشر في dzexams
+            dz_search = f"https://dzexams.com/ar/?s={urllib.parse.quote_plus(query + ' ' + stream)}"
+            r2 = requests.get(dz_search, headers=headers, timeout=10)
+            soup2 = BeautifulSoup(r2.text, 'html.parser')
+            for a in soup2.find_all('a', href=True)[:5]:
+                if 'dzexams.com' in a['href']:
+                    links.append(a['href'])
+        
+        # الآن نجيب محتوى أول 3 روابط
+        for url in links[:3]:
+            try:
+                page = requests.get(url, headers=headers, timeout=8)
+                s = BeautifulSoup(page.text, 'lxml')
+                for tag in s(["script","style","nav","footer","header"]): tag.decompose()
+                text = s.get_text(separator="\n")
+                lines = [l.strip() for l in text.splitlines() if len(l.strip())>40]
+                clean = "\n".join(lines)
+                if len(clean) > 300:
+                    all_texts.append(clean[:4000])
+            except:
+                continue
+            time.sleep(0.5)
+            
+    except Exception as e:
+        print(f"search error: {e}")
+    
+    return all_texts
 
-    with st.spinner("نفكر..."):
-        ans=ask_free_no_key(q, ctx)
+def ask_from_live_sites(question, contexts, stream):
+    if not contexts:
+        return f"عذرا يا بطل شعبة {stream}، بحثت في المواقع الرسمية (dzexams و الباك في الجيب) وما لقيتش هذه المعلومة بالضبط. جرب تصيغ السؤال بكلمات من الدرس 💪"
+    
+    combined = "\n\n---\n\n".join(contexts)[:6000]
+    
+    system = f"""
+انت أستاذ بكالوريا جزائري لطيف جدا في شعبة {stream}.
+عندك هذا النص الحي الذي جبته الآن مباشرة من المواقع الرسمية dzexams.com و bac-feljib.com:
+\"\"\"
+{combined}
+\"\"\"
+
+القوانين:
+1. جاوب فقط من النص اللي فوق، ممنوع تزيد أي معلومة من عندك
+2. صغ الجواب بأسلوب لطيف ومشجع وبالدارجة الجزائرية الخفيفة: "الله يبارك سؤال ممتاز يا بطل..."
+3. لا تذكر الروابط ولا تقول انك بحثت، جاوب مباشرة كأنك الأستاذ
+4. اذا النص لا يحتوي الجواب قل: هذه النقطة غير متوفرة حاليا في المواقع الرسمية لشعبة {stream}
+"""
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"system","content":system},{"role":"user","content":question}]
+        )
+        return resp.choices[0].message.content
+    except:
+        # لو طاح الذكاء، رجع النص الخام بلباقة
+        return f"يا بطل، حسب المواقع الرسمية لشعبة {stream}:\n\n{contexts[0][:1000]}"
+
+# --- الواجهة ---
+st.title(f"{selected_stream} - بوت الباك المباشر 🌐")
+st.caption(f"مربوط مباشرة بـ dzexams.com و bac-feljib.com - شعبة {selected_stream} - يجاوب فقط منهم")
+
+for m in st.session_state.messages[selected_stream]:
+    with st.chat_message(m["role"]): st.markdown(m["content"])
+
+if len(st.session_state.messages[selected_stream]) == 0:
+    with st.chat_message("assistant"):
+        st.markdown(f"أهلا يا بطل *{selected_stream}! 👋\n\nأنا مربوط مباشرة بمواقع الباك الرسمية، اسألني أي درس من دروس *{selected_stream}** ونجيبلك الجواب في ثواني من dzexams و الباك في الجيب، بلا ما ترفع حتى كتاب!")
+
+q = st.chat_input(f"اسأل في {selected_stream}...")
+
+if q:
+    st.session_state.messages[selected_stream].append({"role":"user","content":q})
+    with st.chat_message("user"): st.markdown(q)
+
+    with st.spinner(f"🔍 نبحث الآن في dzexams.com و bac-feljib.com عن {selected_stream}..."):
+        contexts = search_in_trusted_sites(q, STREAMS[selected_stream])
+    
+    with st.spinner("✍️ نكتبلك الجواب بأسلوب لطيف..."):
+        ans = ask_from_live_sites(q, contexts, STREAMS[selected_stream])
+
     with st.chat_message("assistant"): st.markdown(ans)
-    st.session_state.messages.append({"role":"assistant","content":ans,"mode":mode})
+    st.session_state.messages[selected_stream].append({"role":"assistant","content":ans})
+    
+    # للمطور فقط: وري منين جبنا
+    with st.expander("🔎 (للمطور) شوف النص الخام اللي جبناه من المواقع"):
+        for i, c in enumerate(contexts):
+            st.text(f"--- مصدر {i+1} ---\n{c[:800]}...")
